@@ -2,9 +2,7 @@
   "name": "cerita-nusantara",
   "version": "1.0.0",
   "description": "",
-  "scripts": {
-    "start": "node index.js"
-  },
+  
   "keywords": [],
   "author": "",
   "license": "ISC",
