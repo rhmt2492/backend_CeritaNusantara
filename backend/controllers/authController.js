@@ -276,16 +276,17 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// REGISTER
+
+
 exports.register = async (req, res) => {
-  const { username, email, password } = req.body;
+  const { username, email, password, role } = req.body;
 
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     db.query(
-      'INSERT INTO users (username, email, password) VALUES (?, ?, ?)',
-      [username, email, hashedPassword],
+      'INSERT INTO users (username, email, password, role) VALUES (?, ?, ?, ?)',
+      [username, email, hashedPassword, role || 'user'],
       (err, result) => {
         if (err) {
           console.error(err);
@@ -295,8 +296,8 @@ exports.register = async (req, res) => {
       }
     );
   } catch (error) {
-    res.status(500).json({ message: 'Terjadi kesalahan server' });
-  }
+    res.status(500).json({ message: 'Terjadi kesalahan server' });
+}
 };
 
 // LOGIN
@@ -807,8 +808,44 @@ exports.hapusFavorit = (req, res) => {
 // MEDIA
 
 
+exports.getSemuaCeritaOrangApproved = (req, res) => {
+  const user_id = req.query.user_id || null;
+
+  let query = `
+    SELECT 
+      c.id_cerita AS id, 
+      c.judul, 
+      c.deskripsi AS deskripsi, 
+      c.img AS gambar, 
+      c.lokasi, 
+      u.username AS nama_user,
+      c.created_at
+    FROM tambah_cerita c
+    JOIN users u ON c.user_id = u.id
+    WHERE c.status = 'approved'
+  `;
+
+  const params = [];
+
+  // Tambah filter user_id jika dikirimkan di query
+  if (user_id) {
+    query += ` AND c.user_id = ?`;
+    params.push(user_id);
+  }
+
+  db.query(query, params, (err, results) => {
+    if (err) {
+      return res.status(500).json({ message: 'Gagal mengambil daftar cerita', error: err });
+    }
+
+    res.status(200).json({ data: results });
+  });
+};
+
+
+// berdasarkan ID
 // GET /cerita/detail/:id_cerita?user_id=5
-exports.getAllCeritaWithDetails = (req, res) => {
+exports.getAllCeritaWithDetailsByIdCeritaApproved = (req, res) => {
   const id_cerita = req.params.id_cerita;
   const user_id = req.query.user_id || null;
 
@@ -912,27 +949,167 @@ exports.getAllCeritaWithDetails = (req, res) => {
   });
 };
 
-// // PUT /cerita/:id/status
-// exports.updateStatusCerita = (req, res) => {
-//   const { status, alasan, analisis_emotional, summarize } = req.body;
-//   const { id } = req.params;
+// GET /cerita/detail?user_id=5
+exports.getCeritaALLApproved = (req, res) => {
+  const user_id = req.query.user_id || null;
 
-//   const updateQuery = `UPDATE tambah_cerita SET status = ? WHERE id_cerita = ?`;
+  const ceritaQuery = `
+    SELECT c.id_cerita AS id, c.judul, c.deskripsi AS deskripsi, c.img AS gambar, c.lokasi, u.username AS nama_user
+    FROM tambah_cerita c
+    JOIN users u ON c.user_id = u.id
+    WHERE c.status = 'approved'
+  `;
 
-//   db.query(updateQuery, [status, id], (err, result) => {
-//     if (err) return res.status(500).json({ message: 'Gagal update status', error: err });
+  db.query(ceritaQuery, async (err, ceritaResults) => {
+    if (err) {
+      return res.status(500).json({ message: 'Gagal mengambil data cerita', error: err });
+    }
 
-//     if (status === 'approved') {
-//       const accQuery = `INSERT INTO acc_list (id_cerita, analisis_emotional_cerita, summarize) VALUES (?, ?, ?)`;
-//       db.query(accQuery, [id, analisis_emotional || '', summarize || '']);
-//     } else if (status === 'rejected') {
-//       const rejectQuery = `INSERT INTO reject_list (id_cerita, alasan) VALUES (?, ?)`;
-//       db.query(rejectQuery, [id, alasan || 'Tidak ada alasan']);
+    const finalResults = await Promise.all(ceritaResults.map(async (cerita) => {
+      const id_cerita = cerita.id;
+
+      // Ambil komentar
+      const komentar = await new Promise((resolve) => {
+        const komentarQuery = `
+          SELECT k.id AS id_komentar, k.isi_komentar, k.tanggal, u.username
+          FROM komentar k
+          JOIN users u ON k.id_user = u.id
+          WHERE k.id_cerita = ?
+          ORDER BY k.tanggal ASC
+        `;
+        db.query(komentarQuery, [id_cerita], (err2, komentarResult) => {
+          if (err2) resolve([]);
+          else resolve(komentarResult);
+        });
+      });
+
+      // Ambil like
+      const like = await new Promise((resolve) => {
+        const likeQuery = user_id
+          ? `SELECT COUNT(*) AS total_like, SUM(CASE WHEN id_user = ? THEN 1 ELSE 0 END) AS user_like FROM like_cerita WHERE id_cerita = ?`
+          : `SELECT COUNT(*) AS total_like FROM like_cerita WHERE id_cerita = ?`;
+        const likeParams = user_id ? [user_id, id_cerita] : [id_cerita];
+
+        db.query(likeQuery, likeParams, (err3, likeResult) => {
+          if (err3) resolve({ total: 0, sudahDilikeUser: false });
+          else {
+            const total = likeResult[0]?.total_like ?? 0;
+            const sudah = user_id ? (likeResult[0]?.user_like ?? 0) > 0 : false;
+            resolve({ total, sudahDilikeUser: sudah });
+          }
+        });
+      });
+
+      // Ambil favorit
+      const favorit = await new Promise((resolve) => {
+        const favQuery = user_id
+          ? `SELECT COUNT(*) AS total_favorit, SUM(CASE WHEN id_user = ? THEN 1 ELSE 0 END) AS user_favorit FROM favorit_cerita WHERE id_cerita = ?`
+          : `SELECT COUNT(*) AS total_favorit FROM favorit_cerita WHERE id_cerita = ?`;
+        const favParams = user_id ? [user_id, id_cerita] : [id_cerita];
+
+        db.query(favQuery, favParams, (err4, favResult) => {
+          if (err4) resolve({ total: 0, sudahDifavoritkanUser: false });
+          else {
+            const total = favResult[0]?.total_favorit ?? 0;
+            const sudah = user_id ? (favResult[0]?.user_favorit ?? 0) > 0 : false;
+            resolve({ total, sudahDifavoritkanUser: sudah });
+          }
+        });
+      });
+
+      return {
+        ...cerita,
+        komentar,
+        like,
+        favorit
+      };
+    }));
+
+    return res.status(200).json({ data: finalResults });
+  });
+};
+
+
+
+exports.getJumlahCeritaApproved = (req, res) => {
+  const query = `
+    SELECT created_at
+    FROM tambah_cerita c
+    WHERE c.status = 'approved'
+    ORDER BY created_at DESC
+  `;
+  db.query(query, (err, results) => {
+    if (err) {
+      return res.status(500).json({ message: 'Gagal mengambil tanggal cerita', error: err });
+    }
+
+    res.status(200).json({
+      total_cerita: results.length,
+      tanggal_cerita: results.map(row => row.created_at)
+    });
+  });
+};
+
+
+
+// cerita populer
+
+exports.getCeritaPopuler = (req, res) => {
+  const limit = parseInt(req.query.limit) || 10;  // default limit 10
+
+  const query = `
+    SELECT 
+      c.id_cerita AS id, 
+      c.judul, 
+      c.deskripsi AS isi, 
+      c.img AS gambar, 
+      c.lokasi, 
+      u.username AS nama_user,
+      c.created_at,
+      COUNT(lc.id_user) AS total_like
+    FROM tambah_cerita c
+    JOIN users u ON c.user_id = u.id
+    LEFT JOIN like_cerita lc ON c.id_cerita = lc.id_cerita
+    WHERE c.status = 'approved'
+    GROUP BY c.id_cerita, c.judul, c.deskripsi, c.img, c.lokasi, u.username, c.created_at
+    HAVING total_like > 0
+    ORDER BY total_like DESC, c.created_at DESC
+    LIMIT ?
+  `;
+
+  db.query(query, [limit], (err, results) => {
+    if (err) {
+      return res.status(500).json({ message: 'Gagal mengambil cerita populer', error: err });
+    }
+    res.status(200).json({ data: results });
+  });
+};
+
+
+
+
+
+
+
+
+// // Menghitung total cerita di tabel tambah_cerita
+// exports.getJumlahCeritaApproved = (req, res) => {
+//   const countQuery = `
+//     SELECT COUNT(*) AS total_cerita
+//     FROM tambah_cerita c
+//     WHERE c.status = 'approved'
+//   `;
+//   db.query(countQuery, (err, results) => {
+//     if (err) {
+//       return res.status(500).json({ message: 'Gagal menghitung jumlah cerita', error: err });
 //     }
 
-//     // (Opsional) Hapus dari waiting_list
-//     db.query(`DELETE FROM waiting_list WHERE id_cerita = ?`, [id]);
-
-//     res.status(200).json({ message: `Status cerita #${id} berhasil diubah ke '${status}'` });
+//     // results[0].total_cerita berisi jumlah cerita
+//     res.status(200).json({ total_cerita: results[0].total_cerita });
 //   });
 // };
+
+
+
+
+

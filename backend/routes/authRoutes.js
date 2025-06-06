@@ -43,7 +43,14 @@ router.post('/hapus-favorit', authController.hapusFavorit);
 // Favorit
 // media
 
-router.get('/cerita/detail/:id_cerita', authController.getAllCeritaWithDetails);
+router.get('/semua-cerita', authController.getSemuaCeritaOrangApproved);
+router.get('/cerita/detail', authController.getCeritaALLApproved);
+router.get('/cerita/detail/:id_cerita', authController.getAllCeritaWithDetailsByIdCeritaApproved);
+router.get('/jumlah-cerita', authController.getJumlahCeritaApproved);
 
+
+// cerita populer
+// Route cerita populer
+router.get('/cerita/populer', authController.getCeritaPopuler);
 
 module.exports = router;
